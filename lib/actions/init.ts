@@ -146,7 +146,6 @@ export async function getModuleRecords(moduleKey: string, userId?: string) {
     .eq("user_id", uid)
     .eq("module_key", moduleKey)
     .order("record_date", { ascending: false })
-    .limit(20)
   if (error) throw new Error("获取记录失败: " + error.message)
   return data
 }

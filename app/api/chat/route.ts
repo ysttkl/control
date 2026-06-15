@@ -1,4 +1,4 @@
-import { streamText, tool, jsonSchema } from "ai"
+import { streamText, tool, jsonSchema, stepCountIs } from "ai"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createClient } from "@/utils/supabase/server"
 import { cookies } from "next/headers"
@@ -37,11 +37,29 @@ async function fetchModules(userId: string) {
 }
 
 /**
- * 构建 System Prompt —— 科学顾问角色 + 智能估算能力。
- * 每次请求时注入当前所有模块的 schema，确保 AI 写入的数据类型严格匹配。
+ * 获取当前北京时间的格式化字符串。
+ * 格式：2026-06-15（周日）14:30
+ */
+function nowInBeijing(): string {
+  const now = new Date()
+  const beijing = new Date(now.getTime() + 8 * 60 * 60 * 1000) // UTC → 北京时间
+  const y = beijing.getUTCFullYear()
+  const m = String(beijing.getUTCMonth() + 1).padStart(2, "0")
+  const d = String(beijing.getUTCDate()).padStart(2, "0")
+  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+  const wd = weekdays[beijing.getUTCDay()]
+  const hh = String(beijing.getUTCHours()).padStart(2, "0")
+  const mm = String(beijing.getUTCMinutes()).padStart(2, "0")
+  return `${y}-${m}-${d}（${wd}）${hh}:${mm}`
+}
+
+/**
+ * 构建 System Prompt —— 时间感知 + 科学顾问 + 数据分析师。
+ * 每次请求时注入当前所有模块的 schema，确保 AI 严格匹配。
  */
 function buildSystemPrompt(modules: Array<{ module_key: string; display_name: string; schema_definition: unknown }>) {
-  // 提取模块字段定义的通用函数
+  const currentTime = nowInBeijing()
+
   const describeModule = (m: typeof modules[number]) => {
     const schema = m.schema_definition as Record<string, unknown>
     const fields = (schema?.fields as Array<{ key: string; label: string; type: string; required?: boolean; options?: string[] }>) ?? []
@@ -57,13 +75,32 @@ function buildSystemPrompt(modules: Array<{ module_key: string; display_name: st
     ? modules.map(describeModule).join("\n\n")
     : "（暂无模块，AI 应引导用户使用 create_new_module 工具创建）"
 
-  return `## 角色定位
+  return `## 时间感知
 
-你是一位专业的 **健康管理与个人财务科学顾问**。你不仅帮用户记录数据，更要用你的专业知识主动分析、估算和补充用户未明确提供的信息。
+当前的真实时间是 **${currentTime}（北京时间）**。
 
-## 核心能力：智能常识估算
+### 日期推算规则
+- 用户**没提到任何时间** → record_date 默认填今天的日期
+- 用户说"今天" → 用当前日期
+- 用户说"昨天" → 当前日期减 1 天
+- 用户说"前天" → 当前日期减 2 天
+- 用户说"上周五" / "上周三" → 推算到上周对应的星期几
+- 用户说"这周一/这周三" → 推算本周对应的日期
+- 用户说具体日期如"6月10号" → 格式化为 YYYY-06-10（年份用当年）
+- 用户说"月初" / "上周" 等模糊范围 → 尽量推算合理日期
 
-当用户输入信息不完整时，你必须**基于科学常识和生活经验主动估算**缺失的数值。绝不能因为用户没说全就空着不填。
+**重要**：调用 record_data 时，务必根据上述规则在 record_date 参数中填入推算出的日期。调用 query_module_records 时，根据用户时间锚点推算出 start_date 和 end_date。"这周"指周一到周日；"最近7天" = ${currentTime.slice(0, 10)} 往前推 7 天。
+
+## 角色定位
+
+你是一位专业的 **健康管理与个人财务科学顾问 + 数据分析师**。你有三大核心能力：
+1. **记录数据**：帮用户把日常饮食、运动、财务信息结构化存入数据库。
+2. **科学估算**：当用户信息不完整时，基于常识主动估算缺失数值。
+3. **查询与分析**：从数据库中检索用户的历史记录，进行汇总计算和趋势总结。
+
+## 核心能力一：智能常识估算
+
+当用户输入信息不完整时，你必须**基于科学常识和生活经验主动估算**缺失的数值。
 
 ### 饮食估算知识库
 - 一碗米饭（约150g）：热量 ~180kcal, 碳水 ~40g, 蛋白质 ~4g
@@ -104,18 +141,28 @@ ${moduleSchemas}
 
 ## 工作流程
 
-1. **理解意图**：判断用户想记录饮食、运动还是财务。
-2. **提取 + 估算**：提取用户明确提供的信息，同时对模糊部分进行科学估算补全。
-3. **调用工具**：使用 record_data 工具写入完整的结构化数据。data 字段必须完全匹配上面模块定义的字段名和类型，不得自创字段。
-4. **友好反馈**：在文本回复中用温暖、清晰的口吻告知用户你记录了什么、估算了什么。
+根据用户意图，选择正确的流程：
+
+**流程 A：记录数据**
+1. 判断用户想记录饮食、运动还是财务。
+2. 提取明确信息，对模糊部分科学估算补全。
+3. 调用 record_data 工具写入。data 字段必须完全匹配模块 schema。
+4. 温暖告知用户你记录了什么、估算了什么。
+
+**流程 B：查询/统计/回顾**
+1. 判断用户想查哪个模块、什么时间范围。
+2. **必须优先调用 query_module_records 工具**获取原始数据。传入正确的 module_key 和基于当前时间推算的日期范围。
+3. 拿到数据后，扮演数据分析师角色：汇总计算（总热量、总花费、平均值、趋势等），用清晰结构呈现给用户。
+4. 如果查询结果为空，温柔告知用户该模块暂无相关记录，建议先去记录一些数据。
 
 ## 回复要求
 
 - 语气温暖、专业、简洁，像一位贴心的私人助理
-- 明确告知：记录了什么数据 + 你帮忙估算了哪些数值
-- 如果有不确定的地方，可以简略提及假设前提
-- 当用户输入完全无法归类时，使用 create_new_module 工具创建新模块
-- 所有 record_data 调用中填入的 data 必须与模块 schema 严格一致`
+- 记录场景：明确告知记录了什么数据 + 估算的数值及依据
+- 查询场景：用简洁的结构化格式呈现汇总结果（如"本周总支出 325 元，主要集中在餐饮和交通"）
+- 不确定的地方简略提及假设前提
+- 当用户输入无法归类时，使用 create_new_module 创建新模块
+- 所有 record_data 的 data 必须与模块 schema 严格一致`
 }
 
 export async function POST(req: Request) {
@@ -133,6 +180,8 @@ export async function POST(req: Request) {
       model: deepseek.chat("deepseek-chat"),
       system: systemPrompt,
       messages,
+      // 允许最多 3 步（工具调用 → 模型分析回复 → 可能再调用 → 最终回复），默认 1 步会截断查询结果
+      stopWhen: stepCountIs(3),
       tools: {
         /**
          * 工具：向指定模块写入一条结构化记录
@@ -144,6 +193,7 @@ export async function POST(req: Request) {
             module_key: string
             data: Record<string, unknown>
             raw_text?: string
+            record_date?: string
           }>({
             type: "object",
             properties: {
@@ -159,17 +209,23 @@ export async function POST(req: Request) {
                 type: "string",
                 description: "用户原始输入文本，用于追溯",
               },
+              record_date: {
+                type: "string",
+                description:
+                  "记录日期，格式 YYYY-MM-DD。根据用户语意推算：没提时间默认今天，提了'昨天/上周五/6月10号'等则对应转换。不确定时也默认今天。",
+              },
             },
             required: ["module_key", "data"],
           }),
-          execute: async ({ module_key, data, raw_text }) => {
+          execute: async ({ module_key, data, raw_text, record_date }) => {
             const supabase = await getSupabaseClient()
+            const date = record_date ?? new Date().toISOString().split("T")[0]
             const { error } = await supabase.from("life_records").insert({
               user_id: userId,
               module_key,
               data,
               raw_text: raw_text ?? null,
-              record_date: new Date().toISOString().split("T")[0],
+              record_date: date,
             })
 
             if (error) {
@@ -178,8 +234,74 @@ export async function POST(req: Request) {
 
             return {
               success: true,
-              message: `已在「${module_key}」模块中保存记录。`,
-              record: { module_key, data, date: new Date().toISOString().split("T")[0] },
+              message: `已在「${module_key}」模块中保存记录（日期：${date}）。`,
+              record: { module_key, data, date },
+            }
+          },
+        }),
+
+        /**
+         * 工具：查询模块的历史记录（支持日期范围过滤）
+         */
+        query_module_records: tool({
+          description:
+            "查询指定模块的历史记录，支持日期范围过滤和数量限制。当用户询问'今天的数据'、'这周总共'、'最近记录'、'帮我看看'、'总结一下'等回顾/统计类问题时，必须优先调用此工具获取原始数据。",
+          inputSchema: jsonSchema<{
+            module_key: string
+            start_date?: string
+            end_date?: string
+            limit?: number
+          }>({
+            type: "object",
+            properties: {
+              module_key: {
+                type: "string",
+                description: "要查询的模块标识，如 calories、exercise、finance",
+              },
+              start_date: {
+                type: "string",
+                description: "查询起始日期，格式 YYYY-MM-DD。根据当前时间推算，如'今天'=当天，'这周'=本周一",
+              },
+              end_date: {
+                type: "string",
+                description: "查询结束日期，格式 YYYY-MM-DD。根据当前时间推算",
+              },
+              limit: {
+                type: "number",
+                description: "返回记录数量上限，默认 50",
+              },
+            },
+            required: ["module_key"],
+          }),
+          execute: async ({ module_key, start_date, end_date, limit }) => {
+            const supabase = await getSupabaseClient()
+            let query = supabase
+              .from("life_records")
+              .select("id, module_key, data, raw_text, record_date, created_at")
+              .eq("user_id", userId)
+              .eq("module_key", module_key)
+              .order("record_date", { ascending: false })
+              .limit(limit ?? 50)
+
+            if (start_date) {
+              query = query.gte("record_date", start_date)
+            }
+            if (end_date) {
+              query = query.lte("record_date", end_date)
+            }
+
+            const { data, error } = await query
+
+            if (error) {
+              return { success: false, error: error.message }
+            }
+
+            return {
+              success: true,
+              module_key,
+              count: data?.length ?? 0,
+              date_range: { start_date: start_date ?? "不限", end_date: end_date ?? "不限" },
+              records: data ?? [],
             }
           },
         }),

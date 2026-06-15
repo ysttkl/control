@@ -182,8 +182,8 @@ export function ModuleBoard({ initialModules, refreshSignal }: ModuleBoardProps)
                     {modRecords.length === 0 ? (
                       <p className="text-xs text-gray-400">暂无记录</p>
                     ) : (
-                      <div className="space-y-1.5">
-                        {modRecords.slice(0, 5).map((rec) => (
+                      <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                        {modRecords.map((rec) => (
                           <div
                             key={rec.id}
                             className="rounded-lg bg-gray-50 dark:bg-gray-800/50 px-3 py-2 text-xs text-gray-700 dark:text-gray-300"
