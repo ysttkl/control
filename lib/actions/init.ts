@@ -9,16 +9,19 @@ async function getSupabase() {
   return createClient(cookieStore)
 }
 
-/** 三个基础模块的默认 schema 定义 */
+/** 三个基础模块的默认 schema 定义（科学参数版） */
 const DEFAULT_MODULES = [
   {
     module_key: "calories",
-    display_name: "热量记录",
+    display_name: "饮食记录",
     icon: "flame",
     schema_definition: {
       fields: [
         { key: "food_name", label: "食物名称", type: "string", required: true },
         { key: "calories", label: "热量(kcal)", type: "number", required: true },
+        { key: "protein", label: "蛋白质(g)", type: "number", required: false },
+        { key: "carbs", label: "碳水化合物(g)", type: "number", required: false },
+        { key: "fat", label: "脂肪(g)", type: "number", required: false },
         {
           key: "meal_type",
           label: "餐次",
@@ -35,8 +38,8 @@ const DEFAULT_MODULES = [
     icon: "dumbbell",
     schema_definition: {
       fields: [
-        { key: "exercise_type", label: "运动类型", type: "string", required: true },
-        { key: "duration_minutes", label: "时长(分钟)", type: "number", required: true },
+        { key: "activity", label: "运动项目", type: "string", required: true },
+        { key: "duration_min", label: "时长(分钟)", type: "number", required: true },
         {
           key: "intensity",
           label: "强度",
@@ -44,6 +47,8 @@ const DEFAULT_MODULES = [
           options: ["低", "中", "高"],
           required: true,
         },
+        { key: "calories_burned", label: "消耗热量(kcal)", type: "number", required: true },
+        { key: "notes", label: "备注", type: "string", required: false },
       ],
     },
   },
@@ -55,14 +60,15 @@ const DEFAULT_MODULES = [
       fields: [
         { key: "amount", label: "金额(元)", type: "number", required: true },
         {
-          key: "type",
-          label: "类型",
+          key: "direction",
+          label: "方向",
           type: "enum",
-          options: ["收入", "支出"],
+          options: ["支出", "收入"],
           required: true,
         },
         { key: "category", label: "分类", type: "string", required: true },
-        { key: "note", label: "备注", type: "string", required: false },
+        { key: "account", label: "账户", type: "string", required: true },
+        { key: "notes", label: "备注", type: "string", required: false },
       ],
     },
   },

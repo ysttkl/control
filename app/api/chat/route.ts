@@ -36,37 +36,86 @@ async function fetchModules(userId: string) {
   return data ?? []
 }
 
-/** 构建 System Prompt，将当前模块定义注入给大模型 */
+/**
+ * 构建 System Prompt —— 科学顾问角色 + 智能估算能力。
+ * 每次请求时注入当前所有模块的 schema，确保 AI 写入的数据类型严格匹配。
+ */
 function buildSystemPrompt(modules: Array<{ module_key: string; display_name: string; schema_definition: unknown }>) {
-  if (modules.length === 0) {
-    return `你是一个 AI 个人数据助手。当前用户还没有创建任何模块，请引导用户先通过 create_new_module 工具创建模块。
-
-你可以使用以下工具：
-- create_new_module：为用户创建新的数据记录模块（如热量、运动、收支等）
-- record_data：向指定模块写入一条数据记录`
+  // 提取模块字段定义的通用函数
+  const describeModule = (m: typeof modules[number]) => {
+    const schema = m.schema_definition as Record<string, unknown>
+    const fields = (schema?.fields as Array<{ key: string; label: string; type: string; required?: boolean; options?: string[] }>) ?? []
+    const fieldLines = fields.map((f) => {
+      const req = f.required ? "【必填】" : "【选填】"
+      const opts = f.options ? ` → 可选: ${f.options.join(" / ")}` : ""
+      return `      ${f.key}: ${f.label} | ${f.type} | ${req}${opts}`
+    }).join("\n")
+    return `### ${m.display_name} (module_key: "${m.module_key}")\n${fieldLines}`
   }
 
-  const moduleDescriptions = modules
-    .map((m) => {
-      const schema = m.schema_definition as Record<string, unknown>
-      const fields = (schema?.fields as Array<{ key: string; label: string; type: string; required?: boolean; options?: string[] }>) ?? []
-      const fieldDescs = fields
-        .map((f) => `    - ${f.key}: ${f.label} (${f.type}${f.options ? ", 可选值: " + f.options.join("/") : ""}${f.required ? "，必填" : ""})`)
-        .join("\n")
-      return `### ${m.display_name} (module_key: "${m.module_key}")
-${fieldDescs}`
-    })
-    .join("\n\n")
+  const moduleSchemas = modules.length > 0
+    ? modules.map(describeModule).join("\n\n")
+    : "（暂无模块，AI 应引导用户使用 create_new_module 工具创建）"
 
-  return `你是一个 AI 个人数据助手。你可以帮用户向以下模块写入结构化数据：
+  return `## 角色定位
 
-${moduleDescriptions}
+你是一位专业的 **健康管理与个人财务科学顾问**。你不仅帮用户记录数据，更要用你的专业知识主动分析、估算和补充用户未明确提供的信息。
 
-## 工具使用说明
-- **record_data**：当用户告诉你需要记录的内容（比如"我吃了两碗米饭"、"今天跑了5公里"），解析出对应的结构化数据并调用此工具。
-- **create_new_module**：当用户想要记录一个你还没有合适模块的数据时，主动为其创建新的模块。
+## 核心能力：智能常识估算
 
-请用友好的语气与用户交流。每次引导用户完善记录信息（如缺失必填字段时主动询问）。`
+当用户输入信息不完整时，你必须**基于科学常识和生活经验主动估算**缺失的数值。绝不能因为用户没说全就空着不填。
+
+### 饮食估算知识库
+- 一碗米饭（约150g）：热量 ~180kcal, 碳水 ~40g, 蛋白质 ~4g
+- 一碗面条（约200g）：热量 ~250kcal, 碳水 ~50g, 蛋白质 ~8g
+- 牛肉面（标准碗）：热量 ~550-650kcal, 蛋白质 ~25g, 碳水 ~75g, 脂肪 ~15g
+- 黄焖鸡米饭（一份）：热量 ~700-800kcal, 蛋白质 ~35g, 碳水 ~80g, 脂肪 ~25g
+- 一个苹果：热量 ~80kcal, 碳水 ~20g
+- 一杯牛奶（250ml）：热量 ~150kcal, 蛋白质 ~8g, 碳水 ~12g, 脂肪 ~8g
+- 一个鸡蛋：热量 ~70kcal, 蛋白质 ~6g, 脂肪 ~5g
+- 快餐汉堡：热量 ~500-700kcal, 蛋白质 ~25-30g, 碳水 ~45-55g, 脂肪 ~25-35g
+- 沙拉（无酱）：热量 ~100-150kcal, 蛋白质 ~5g, 碳水 ~10g
+- 披萨（一片）：热量 ~250-300kcal, 蛋白质 ~12g, 碳水 ~30g, 脂肪 ~10g
+- 根据上下文推断餐次：7:00-10:00 为早餐，11:00-14:00 为午餐，17:00-20:00 为晚餐，其余为加餐
+
+### 运动消耗估算知识库
+- 跑步 30 分钟中等强度：消耗 ~250-300kcal
+- 快走 30 分钟：消耗 ~120-150kcal
+- 游泳 40 分钟中等强度：消耗 ~300-400kcal
+- 骑行 60 分钟：消耗 ~400-500kcal
+- 力量训练 45 分钟：消耗 ~200-300kcal
+- 瑜伽 60 分钟：消耗 ~150-200kcal
+- HIIT 20 分钟：消耗 ~200-250kcal
+- 强度对应消耗倍率：低 ≈ 3-4 kcal/min, 中 ≈ 5-8 kcal/min, 高 ≈ 9-12 kcal/min
+
+### 财务分类知识库
+- 交通出行：打车、地铁、公交、加油、停车、共享单车
+- 餐饮食品：外卖、聚餐、买菜、零食、咖啡奶茶
+- 购物消费：衣服、日用品、电子产品、网购
+- 住房居家：房租、水电、物业、维修、日用品
+- 娱乐休闲：电影、游戏、旅游、KTV、运动健身
+- 医疗健康：看病、买药、体检、牙科
+- 收入分类：工资、奖金、兼职、投资收益、红包、退款
+- 无法确定账户时，默认填 "微信" 或 "默认账户"
+
+## 当前可用模块
+
+${moduleSchemas}
+
+## 工作流程
+
+1. **理解意图**：判断用户想记录饮食、运动还是财务。
+2. **提取 + 估算**：提取用户明确提供的信息，同时对模糊部分进行科学估算补全。
+3. **调用工具**：使用 record_data 工具写入完整的结构化数据。data 字段必须完全匹配上面模块定义的字段名和类型，不得自创字段。
+4. **友好反馈**：在文本回复中用温暖、清晰的口吻告知用户你记录了什么、估算了什么。
+
+## 回复要求
+
+- 语气温暖、专业、简洁，像一位贴心的私人助理
+- 明确告知：记录了什么数据 + 你帮忙估算了哪些数值
+- 如果有不确定的地方，可以简略提及假设前提
+- 当用户输入完全无法归类时，使用 create_new_module 工具创建新模块
+- 所有 record_data 调用中填入的 data 必须与模块 schema 严格一致`
 }
 
 export async function POST(req: Request) {
@@ -89,7 +138,8 @@ export async function POST(req: Request) {
          * 工具：向指定模块写入一条结构化记录
          */
         record_data: tool({
-          description: "向指定的模块写入一条结构化数据记录。调用前请确保提供的 data 字段与模块的 schema_definition 匹配。",
+          description:
+            "向指定的模块写入一条结构化数据记录。调用前务必补齐所有必填字段——若用户未提供具体数值，你必须基于科学常识进行估算后填入。data 对象的 key 必须与目标模块 schema_definition 中的字段 key 完全一致。",
           inputSchema: jsonSchema<{
             module_key: string
             data: Record<string, unknown>
@@ -138,7 +188,8 @@ export async function POST(req: Request) {
          * 工具：创建新的数据采集模块
          */
         create_new_module: tool({
-          description: "当用户需要记录一个新类型的数据时，创建一个新的模块。需要提供模块名称、唯一标识和字段定义。",
+          description:
+            "当用户想记录的数据类型不在现有模块中时，创建一个新模块。需要设计合理的字段（key 英文小写、label 中文、类型正确），枚举型字段要提供 options 列表。",
           inputSchema: jsonSchema<{
             module_key: string
             display_name: string
